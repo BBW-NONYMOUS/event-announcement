@@ -30,7 +30,6 @@
     "react-dom": "19.2.3",
     "react-native": "0.86.0",
     "react-native-gesture-handler": "~2.32.0",
-    "react-native-marquee": "^0.5.0",
     "react-native-paper": "^5.15.3",
     "react-native-qrcode-svg": "^6.3.21",
     "react-native-reanimated": "4.5.0",
