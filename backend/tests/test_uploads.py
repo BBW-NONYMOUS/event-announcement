@@ -133,6 +133,134 @@ def test_default_limit_is_15_mb():
     assert settings.MAX_UPLOAD_BYTES == 15 * 1024 * 1024
 
 
+# --- Object storage --------------------------------------------------------
+#
+# Production writes to an S3-compatible bucket (Cloudflare R2) because the free
+# hosting tier has an ephemeral filesystem. These cover that branch without a
+# network call: boto3 is imported lazily, so a stub client is enough.
+
+
+class _StubS3:
+    """Records what would have been uploaded."""
+
+    def __init__(self, fail: bool = False):
+        self.uploads: list[tuple[str, str, str]] = []
+        self.fail = fail
+
+    def upload_file(self, source, bucket, key, ExtraArgs=None):  # noqa: N803 - boto3's name
+        if self.fail:
+            raise RuntimeError("bucket unreachable")
+        self.uploads.append((bucket, key, (ExtraArgs or {}).get("ContentType", "")))
+
+
+@pytest.fixture
+def object_storage(monkeypatch):
+    """Configure S3 settings and swap in a stub client."""
+    for key, value in {
+        "S3_ENDPOINT_URL": "https://accountid.r2.cloudflarestorage.com",
+        "S3_ACCESS_KEY_ID": "test-key",
+        "S3_SECRET_ACCESS_KEY": "test-secret",
+        "S3_BUCKET": "event-images",
+        "S3_PUBLIC_URL": "https://pub-test.r2.dev",
+    }.items():
+        monkeypatch.setattr(settings, key, value)
+
+    from app.services import uploads
+
+    stub = _StubS3()
+    monkeypatch.setattr(uploads, "_client", lambda: stub)
+    return stub
+
+
+def test_local_disk_is_the_default(client, admin_headers):
+    """Without S3 settings nothing changes — dev and CI stay on the filesystem."""
+    assert settings.use_object_storage is False
+    assert _post(client, admin_headers, PNG_BYTES).json()["url"].startswith("/uploads/")
+
+
+def test_upload_goes_to_the_bucket(client, admin_headers, object_storage, _isolated_upload_dir):
+    response = _post(client, admin_headers, PNG_BYTES)
+
+    assert response.status_code == 201, response.text
+    filename = response.json()["filename"]
+
+    bucket, key, content_type = object_storage.uploads[0]
+    assert (bucket, key) == ("event-images", filename)
+    # Without the content type the browser downloads the file instead of
+    # rendering it, and every event image breaks.
+    assert content_type == "image/png"
+
+    # The local copy was only a staging buffer for streaming validation.
+    assert list(_isolated_upload_dir.iterdir()) == []
+
+
+def test_stored_url_is_absolute_for_the_bucket(client, admin_headers, object_storage):
+    """Both clients pass absolute URLs through untouched, so this just works."""
+    body = _post(client, admin_headers, PNG_BYTES).json()
+
+    assert body["url"] == f"https://pub-test.r2.dev/{body['filename']}"
+
+
+def test_invalid_files_never_reach_the_bucket(client, admin_headers, object_storage):
+    """Validation runs first — a public bucket must not receive unchecked bytes."""
+    response = _post(client, admin_headers, b"MZ\x90\x00 this is not an image", "payload.png")
+
+    assert response.status_code == 400
+    assert object_storage.uploads == []
+
+
+def test_oversized_upload_never_reaches_the_bucket(
+    client, admin_headers, object_storage, monkeypatch
+):
+    monkeypatch.setattr(settings, "MAX_UPLOAD_MB", 1)
+
+    response = _post(client, admin_headers, PNG_BYTES + b"\x00" * (2 * 1024 * 1024))
+
+    assert response.status_code == 413
+    assert object_storage.uploads == []
+
+
+def test_bucket_failure_reports_an_error_and_leaves_nothing_behind(
+    client, admin_headers, monkeypatch, _isolated_upload_dir
+):
+    for key, value in {
+        "S3_ENDPOINT_URL": "https://accountid.r2.cloudflarestorage.com",
+        "S3_ACCESS_KEY_ID": "test-key",
+        "S3_SECRET_ACCESS_KEY": "test-secret",
+        "S3_BUCKET": "event-images",
+        "S3_PUBLIC_URL": "https://pub-test.r2.dev",
+    }.items():
+        monkeypatch.setattr(settings, key, value)
+
+    from app.services import uploads
+
+    monkeypatch.setattr(uploads, "_client", lambda: _StubS3(fail=True))
+
+    response = _post(client, admin_headers, PNG_BYTES)
+
+    assert response.status_code == 502
+    # A staging file left behind would accumulate on every failed upload.
+    assert list(_isolated_upload_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["S3_ENDPOINT_URL", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET", "S3_PUBLIC_URL"],
+)
+def test_partial_configuration_falls_back_to_disk(monkeypatch, missing):
+    """Half-configured storage must not be treated as configured."""
+    for key in [
+        "S3_ENDPOINT_URL",
+        "S3_ACCESS_KEY_ID",
+        "S3_SECRET_ACCESS_KEY",
+        "S3_BUCKET",
+        "S3_PUBLIC_URL",
+    ]:
+        monkeypatch.setattr(settings, key, "" if key == missing else "set")
+
+    assert settings.use_object_storage is False
+
+
 # --- Serving ---------------------------------------------------------------
 
 

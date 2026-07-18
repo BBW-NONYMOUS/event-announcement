@@ -22,6 +22,20 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     MAX_UPLOAD_MB: int = 15
 
+    # S3-compatible object storage for event images (Cloudflare R2).
+    #
+    # Optional: leave unset and images are written to UPLOAD_DIR, which is what
+    # development and the tests use. Set all five and uploads go to the bucket
+    # instead — necessary on any host with an ephemeral filesystem, where local
+    # files are lost on every redeploy.
+    S3_ENDPOINT_URL: str = ""
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: str = ""
+    S3_BUCKET: str = ""
+    # Public base URL for the bucket, e.g. https://pub-xxxx.r2.dev — this is
+    # what gets persisted in Event.image_url, so it must be publicly readable.
+    S3_PUBLIC_URL: str = ""
+
     @property
     def MAX_UPLOAD_BYTES(self) -> int:
         return self.MAX_UPLOAD_MB * 1024 * 1024
@@ -32,6 +46,23 @@ class Settings(BaseSettings):
         if not path.is_absolute():
             path = Path(__file__).resolve().parent.parent / path
         return path
+
+    @property
+    def use_object_storage(self) -> bool:
+        """True only when every S3 setting is present.
+
+        All-or-nothing on purpose: a half-configured bucket would fail at the
+        moment an admin uploads, rather than at startup where it is obvious.
+        """
+        return all(
+            (
+                self.S3_ENDPOINT_URL,
+                self.S3_ACCESS_KEY_ID,
+                self.S3_SECRET_ACCESS_KEY,
+                self.S3_BUCKET,
+                self.S3_PUBLIC_URL,
+            )
+        )
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

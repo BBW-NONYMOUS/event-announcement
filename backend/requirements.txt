@@ -10,6 +10,9 @@ pydantic[email]
 pydantic-settings
 python-multipart
 slowapi
+# S3-compatible object storage for event images. Only used when the S3_*
+# settings are present; development and the tests write to local disk.
+boto3
 
 # dev / tests
 pytest

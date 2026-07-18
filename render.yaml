@@ -1,51 +1,56 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 #
-# Deploys the FastAPI backend with a managed Postgres and a persistent disk for
-# event images. Point Render at this file (New > Blueprint) and it provisions
-# both services together.
+# Free-tier setup. Two pieces deliberately live outside Render, because its
+# free tier cannot host them without data loss:
 #
-# NOTE: persistent disks require a paid instance type. On a free instance the
-# filesystem is ephemeral, and every uploaded image is lost on redeploy or on
-# the restart that follows the service going to sleep.
+#   Postgres  -> Neon (Render's free database is deleted after its trial ends)
+#   Images    -> Cloudflare R2 (free instances have no persistent disk, so
+#                anything written to the filesystem is lost on every redeploy)
+#
+# Both are wired in through environment variables set in the dashboard. See
+# DEPLOYMENT.md for where to get each value.
 
 services:
   - type: web
     name: announcement-api
     runtime: python
-    plan: starter # disks are unavailable on the free plan
+    plan: free
     # This repo holds backend/, admin-web/ and mobile-app/ side by side, so the
     # service has to be scoped to the backend directory.
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     # Migrations run on every deploy, before the server accepts traffic. Without
     # this, new code meets an old schema and every request touching a new table
-    # 500s until someone remembers to migrate by hand.
+    # 500s until someone migrates by hand.
     startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
-    disk:
-      name: uploads
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
+      # Neon connection string, including ?sslmode=require.
       - key: DATABASE_URL
-        fromDatabase:
-          name: announcement-db
-          property: connectionString
+        sync: false
       # Generated once by Render and then held stable. Changing it invalidates
       # every issued JWT, signing all users out.
       - key: SECRET_KEY
         generateValue: true
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: "1440"
-      # Absolute, so it resolves to the mounted disk rather than the ephemeral
-      # copy of the repo. app/config.py only joins relative paths to the repo.
-      - key: UPLOAD_DIR
-        value: /var/data/uploads
       - key: MAX_UPLOAD_MB
         value: "15"
-      # Browser origins for admin-web. The mobile app does not need an entry:
-      # native requests are not subject to CORS.
+      # Browser origins for admin-web. The mobile app needs no entry: native
+      # requests are not subject to CORS.
       - key: CORS_ORIGINS
+        sync: false
+      # Cloudflare R2. All five must be set or the API falls back to the local
+      # filesystem, where images survive only until the next deploy.
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_PUBLIC_URL
         sync: false
       - key: PYTHON_VERSION
         value: "3.10.11"
@@ -72,8 +77,3 @@ services:
       - type: rewrite
         source: /*
         destination: /index.html
-
-databases:
-  - name: announcement-db
-    databaseName: event_checkin
-    plan: basic-256mb

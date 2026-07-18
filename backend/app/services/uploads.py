@@ -95,6 +95,11 @@ async def save_event_image(upload: UploadFile) -> tuple[str, int]:
                 status.HTTP_400_BAD_REQUEST,
                 f"File contents are {actual}, which does not match the declared {content_type}.",
             )
+
+        # Only once the bytes are known-good does the image leave this machine.
+        # Uploading first would put unvalidated content in a public bucket.
+        if settings.use_object_storage:
+            _put_object(target, filename, content_type)
     except Exception:
         # Never leave a partial or rejected file behind.
         target.unlink(missing_ok=True)
@@ -102,19 +107,64 @@ async def save_event_image(upload: UploadFile) -> tuple[str, int]:
     finally:
         await upload.close()
 
+    if settings.use_object_storage:
+        # The bucket holds the image now; the local copy was only a staging
+        # buffer so validation could stream rather than buffer in memory.
+        target.unlink(missing_ok=True)
+
     return filename, size
 
 
-def public_url(filename: str) -> str:
-    """Host-relative URL for a stored image, e.g. `/uploads/ab12.png`.
+def _client():
+    """S3-compatible client, built per call.
 
-    Deliberately not absolute. This value is persisted to Event.image_url and
-    read back by every client, so it must not carry the *uploader's* host: an
-    admin uploading from localhost would otherwise store
-    `http://localhost:8000/...`, which a phone on the LAN resolves to itself
-    and fails to load. Each client joins this onto its own API base instead.
-    Externally hosted images stay absolute and are passed through untouched.
+    boto3 is imported here rather than at module scope so development and the
+    test suite — which use the local filesystem — do not need it installed.
     """
+    import boto3
+
+    return boto3.client(
+        "s3",
+        endpoint_url=settings.S3_ENDPOINT_URL,
+        aws_access_key_id=settings.S3_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
+        # R2 ignores regions but the SDK insists on one.
+        region_name="auto",
+    )
+
+
+def _put_object(source: Path, key: str, content_type: str) -> None:
+    try:
+        _client().upload_file(
+            str(source),
+            settings.S3_BUCKET,
+            key,
+            # Without this the object is served as a download rather than
+            # rendered inline, and every event image would fail to display.
+            ExtraArgs={"ContentType": content_type},
+        )
+    except Exception as exc:
+        raise _reject(
+            status.HTTP_502_BAD_GATEWAY,
+            "Could not store the image. Please try again.",
+        ) from exc
+
+
+def public_url(filename: str) -> str:
+    """URL for a stored image, as persisted to Event.image_url.
+
+    With object storage configured this is the bucket's absolute public URL.
+    Both clients already pass absolute URLs through untouched, so nothing on
+    the frontend changes.
+
+    Otherwise it is host-relative (`/uploads/ab12.png`), deliberately: the
+    value must not carry the *uploader's* host, or an admin uploading from
+    localhost would store `http://localhost:8000/...`, which a phone on the LAN
+    resolves to itself and fails to load. Each client joins the relative form
+    onto its own API base instead.
+    """
+    if settings.use_object_storage:
+        return f"{settings.S3_PUBLIC_URL.rstrip('/')}/{filename}"
     return f"/uploads/{filename}"
 
 
