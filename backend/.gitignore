@@ -1,0 +1,10 @@
+.env
+env/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Uploaded event images are user data, not source.
+uploads/

@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+alembic
+psycopg2-binary
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt<4.1          # passlib 1.7.4 cannot drive bcrypt >= 4.1 (reads bcrypt.__about__)
+pydantic[email]
+pydantic-settings
+python-multipart
+slowapi
+
+# dev / tests
+pytest
+httpx

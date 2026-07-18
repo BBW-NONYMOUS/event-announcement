@@ -1,0 +1,41 @@
+# Repo-wide safety net. Each project also has its own .gitignore; these rules
+# apply everywhere so a secret cannot slip through a gap in one of them.
+
+# --- Secrets ---------------------------------------------------------------
+# Real env files never belong in the repo. Production values go in the host's
+# dashboard (Render env vars / eas.json), not here.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.p12
+*.p8
+*.keystore
+
+# --- Dependencies and build output -----------------------------------------
+node_modules/
+dist/
+build/
+env/
+venv/
+__pycache__/
+*.py[cod]
+
+# --- Caches ----------------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.expo/
+.gradle/
+*.tsbuildinfo
+
+# --- User data --------------------------------------------------------------
+# Uploaded event images are user data, not source. In production these live on
+# the mounted disk, not in the repo.
+uploads/
+
+# --- OS / editor ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.log
